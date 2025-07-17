@@ -1,0 +1,67 @@
+{
+  "project_info": {
+    "project_number": "1065979739507",
+    "project_id": "earthquake-5b60b",
+    "storage_bucket": "earthquake-5b60b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1065979739507:android:3a3c3468ad3ae4d4951906",
+        "android_client_info": {
+          "package_name": "com.example.thai_thermo_2"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA2EYPBiG-XZuKQsktJgTcttcp_Rbq42ac"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1065979739507:android:52256f113d7a6f73951906",
+        "android_client_info": {
+          "package_name": "com.example.thai_thermo_3"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA2EYPBiG-XZuKQsktJgTcttcp_Rbq42ac"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1065979739507:android:ed8d0d15bdfef4dc951906",
+        "android_client_info": {
+          "package_name": "com.softacular.whaipao"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA2EYPBiG-XZuKQsktJgTcttcp_Rbq42ac"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
