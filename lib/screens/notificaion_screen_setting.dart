@@ -1494,20 +1494,20 @@ class _NotificationSettingsScreenState
                 
                 // ปุ่มทดสอบการคำนวณระยะทาง
                 const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: OutlinedButton.icon(
-                    onPressed: _userLatitude != null && _userLongitude != null 
-                        ? _testDistanceCalculation 
-                        : null,
-                    icon: const Icon(Icons.calculate, color: Colors.green),
-                    label: const Text('ทดสอบการคำนวณระยะทาง', style: TextStyle(color: Colors.white)),
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size(double.infinity, 45),
-                      side: const BorderSide(color: Colors.green),
-                    ),
-                  ),
-                ),
+                // Padding(
+                //   padding: const EdgeInsets.symmetric(horizontal: 16),
+                //   child: OutlinedButton.icon(
+                //     onPressed: _userLatitude != null && _userLongitude != null 
+                //         ? _testDistanceCalculation 
+                //         : null,
+                //     icon: const Icon(Icons.calculate, color: Colors.green),
+                //     label: const Text('ทดสอบการคำนวณระยะทาง', style: TextStyle(color: Colors.white)),
+                //     style: OutlinedButton.styleFrom(
+                //       minimumSize: const Size(double.infinity, 45),
+                //       side: const BorderSide(color: Colors.green),
+                //     ),
+                //   ),
+                // ),
               ],
               
               // ปุ่มบันทึกการตั้งค่าเซิร์ฟเวอร์

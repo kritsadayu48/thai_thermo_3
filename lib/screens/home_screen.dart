@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math'; // Add import for min function
 import 'package:flutter/material.dart';
+import 'package:flutter_map_marker_popup/flutter_map_marker_popup.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,10 +13,9 @@ import 'package:clipboard/clipboard.dart';
 import 'package:thai_thermo_3/screens/notificaion_screen_setting.dart';
 import 'package:thai_thermo_3/utils/country_helper.dart';
 import 'package:thai_thermo_3/utils/date_helper.dart';
-import '../main.dart'; // Import for runNotificationDiagnostics
-import 'package:flutter/foundation.dart';
-import 'package:flutter/rendering.dart';
-import 'package:flutter_map/flutter_map.dart'; // Change from google_maps_flutter to flutter_map
+import 'package:flutter_map/flutter_map.dart';
+import 'package:apple_maps_flutter/apple_maps_flutter.dart'
+    as AM; // Change from google_maps_flutter to flutter_map
 import 'package:latlong2/latlong.dart'; // For LatLng
 import 'package:location/location.dart';
 import 'package:url_launcher/url_launcher.dart'; // เพิ่ม import สำหรับเปิด URL
@@ -25,18 +25,11 @@ import '../services/earthquake_service.dart';
 import '../services/notification_service.dart';
 import '../services/fcm_service.dart';
 import 'map_screen.dart'; // Add this import
-import 'notificaion_screen_setting.dart';
 import '../enums/data_fetch_mode.dart';
 import 'earthquake_risk_screen.dart'; // Add this import
 
 // Add enum for date filter options near the top of the file
-enum DateFilterOption {
-  today,
-  thisWeek,
-  thisMonth,
-  threeMonths,
-  all
-}
+enum DateFilterOption { today, thisWeek, thisMonth, threeMonths, all }
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -46,28 +39,34 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  // iOS Apple Maps
+  AM.AppleMapController? _iosMapController;
+  final Set<AM.Annotation> _iosAnnotations = {};
+
   bool _isLoading = false;
   DateTime? _lastRefresh;
   String? _fcmToken;
   bool _showLastRefreshed = true;
   String? _selectedRegionCode;
-  
+
   // เหลือเพียงตัวแปรสำหรับอัพเดทอัตโนมัติแต่ไม่แสดงให้ผู้ใช้ทราบ
   Timer? _autoRefreshTimer;
   // กำหนดให้อัพเดททุก 5 นาทีโดยไม่ให้ผู้ใช้ปรับแก้
   final int _refreshIntervalMinutes = 5;
-  
+
   // Add location service
   final Location _locationService = Location();
-  
+
   // เพิ่มตัวแปรสำหรับเก็บตำแหน่งผู้ใช้
   LocationData? _currentUserLocation;
-  
+
   // Date filter option
   DateFilterOption _selectedDateFilter = DateFilterOption.all;
-  
+
   // เพิ่มตัวแปรสำหรับโหมดการดึงข้อมูล
   DataFetchMode _dataFetchMode = DataFetchMode.southeastAsia;
+
+  final PopupController _popupController = PopupController();
 
   // เพิ่มตัวแปรสำหรับชนิดของแผนที่
   String _mapType = 'normal';
@@ -79,7 +78,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final MapController _mapController = MapController();
   final Map<String, Marker> _markers = {};
   bool _isMapLoaded = false;
-  
+
   // กำหนดพิกัดเริ่มต้น (กรุงเทพฯ)
   static const LatLng _defaultCenter = LatLng(13.7563, 100.5018);
   static const double _defaultZoom = 5.0;
@@ -90,11 +89,11 @@ class _HomeScreenState extends State<HomeScreen> {
     _initialize();
     _checkLocationPermission();
     _getCurrentLocation(); // เพิ่มการดึงตำแหน่งผู้ใช้
-    
+
     // Start auto-refresh timer
     _startAutoRefreshTimer();
   }
-  
+
   @override
   void dispose() {
     // Cancel timer when widget is disposed
@@ -110,25 +109,32 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _selectedRegionCode = prefs.getString('selectedRegion') ?? 'all';
       // Load date filter preference
-      final savedDateFilter = prefs.getString('selectedDateFilter') ?? DateFilterOption.all.toString();
+      final savedDateFilter =
+          prefs.getString('selectedDateFilter') ??
+          DateFilterOption.all.toString();
       _selectedDateFilter = DateFilterOption.values.firstWhere(
         (e) => e.toString() == savedDateFilter,
-        orElse: () => DateFilterOption.all
+        orElse: () => DateFilterOption.all,
       );
-      
+
       // โหลดโหมดการดึงข้อมูล
       final savedFetchMode = prefs.getString('dataFetchMode');
       if (savedFetchMode != null) {
         _dataFetchMode = DataFetchMode.values.firstWhere(
           (e) => e.toString() == savedFetchMode,
-          orElse: () => DataFetchMode.southeastAsia
+          orElse: () => DataFetchMode.southeastAsia,
         );
       }
-      
+
       // โหลดชนิดของแผนที่
       final savedMapType = prefs.getString('mapType');
       if (savedMapType != null) {
         _mapType = savedMapType;
+        debugPrint('HomeScreen - Loaded saved map type: $_mapType');
+      } else {
+        debugPrint(
+          'HomeScreen - No saved map type found, using default: $_mapType',
+        );
       }
     });
 
@@ -142,8 +148,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // โหลดข้อมูลครั้งแรกเมื่อเปิดแอพ
     _loadEarthquakes(checkForNotifications: false).then((_) {
-      // สร้างมาร์คเกอร์บนแผนที่หลังจากโหลดข้อมูลเสร็จ
-      _createMarkers();
+      // รอให้แผนที่โหลดเสร็จก่อนสร้างมาร์คเกอร์
+      if (_isMapLoaded) {
+        _createMarkers();
+      } else {
+        debugPrint(
+          'HomeScreen - Map not loaded yet, will create markers when map is ready',
+        );
+      }
     });
 
     // ตั้งค่าป้องกันการแจ้งเตือนซ้ำเมื่อเปิดแอพ
@@ -166,29 +178,32 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     };
   }
-  
+
   // Start auto-refresh timer - ทำให้เรียบง่ายไม่มี UI ให้ตั้งค่า
   void _startAutoRefreshTimer() {
     // Cancel existing timer if any
     _autoRefreshTimer?.cancel();
-    
+
     // Create new timer - ใช้ค่าคงที่โดยไม่ให้ผู้ใช้ปรับแก้
     _autoRefreshTimer = Timer.periodic(
-      Duration(minutes: _refreshIntervalMinutes), 
+      Duration(minutes: _refreshIntervalMinutes),
       (timer) {
         if (mounted) {
           debugPrint('Auto-refreshing earthquake data...');
           // ดึงข้อมูลโดยไม่แจ้งเตือนในทุกกรณี
-          if (!_isLoading) { // เพิ่มเงื่อนไขตรวจสอบว่าไม่ได้กำลังโหลดข้อมูลอยู่
+          if (!_isLoading) {
+            // เพิ่มเงื่อนไขตรวจสอบว่าไม่ได้กำลังโหลดข้อมูลอยู่
             _loadEarthquakes(checkForNotifications: false);
           } else {
             debugPrint('Skip auto-refresh because app is already loading data');
           }
         }
-      }
+      },
     );
-    
-    debugPrint('Started auto-refresh timer (every $_refreshIntervalMinutes minutes)');
+
+    debugPrint(
+      'Started auto-refresh timer (every $_refreshIntervalMinutes minutes)',
+    );
   }
 
   Future<void> _checkForNewEarthquakes() async {
@@ -201,7 +216,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // ดึงข้อมูลเฉพาะช่วง 1 ชั่วโมงล่าสุด (ใช้ฟังก์ชันใหม่)
       await earthquakeService.fetchLastHourEarthquakes(
-        checkForNotifications: false,  // ปิดการแจ้งเตือนในทุกกรณี
+        checkForNotifications: false, // ปิดการแจ้งเตือนในทุกกรณี
         respectMagnitudeFilter: true,
       );
 
@@ -330,21 +345,21 @@ class _HomeScreenState extends State<HomeScreen> {
       switch (_dataFetchMode) {
         case DataFetchMode.global:
           await earthquakeService.fetchRecentEarthquakes(
-            checkForNotifications: false,  // ปิดการแจ้งเตือนในทุกกรณี
+            checkForNotifications: false, // ปิดการแจ้งเตือนในทุกกรณี
             respectMagnitudeFilter: true,
           );
           break;
-          
+
         case DataFetchMode.southeastAsia:
           await earthquakeService.fetchSoutheastAsiaEarthquakes(
-            checkForNotifications: false,  // ปิดการแจ้งเตือนในทุกกรณี
+            checkForNotifications: false, // ปิดการแจ้งเตือนในทุกกรณี
             respectMagnitudeFilter: true,
           );
           break;
-          
+
         case DataFetchMode.thailandArea:
           await earthquakeService.fetchThailandAndNeighborsEarthquakes(
-            checkForNotifications: false,  // ปิดการแจ้งเตือนในทุกกรณี
+            checkForNotifications: false, // ปิดการแจ้งเตือนในทุกกรณี
             respectMagnitudeFilter: true,
           );
           break;
@@ -352,9 +367,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // ปิดการตรวจสอบการแจ้งเตือนทั้งหมด - ให้แจ้งเตือนผ่าน FCM จากเซิร์ฟเวอร์แทน
       // ไม่จำเป็นต้องตรวจสอบหรือส่งการแจ้งเตือนในแอพอีก
-      
-      // เพิ่มการอัพเดทมาร์คเกอร์หลังโหลดข้อมูล
-      _createMarkers();
+
+      // เพิ่มการอัพเดทมาร์คเกอร์หลังโหลดข้อมูล (เฉพาะเมื่อแผนที่พร้อมใช้งาน)
+      if (_isMapLoaded) {
+        _createMarkers();
+      }
 
       setState(() {
         _lastRefresh = DateTime.now();
@@ -368,12 +385,14 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         // ปรับข้อความแสดง error ให้เป็นมิตรกับผู้ใช้มากขึ้น
         String errorMessage = 'เกิดข้อผิดพลาดในการโหลดข้อมูล';
-        
+
         // ตรวจสอบว่าเป็น timeout หรือไม่
-        if (e.toString().contains('timeout') || e.toString().contains('นานเกินไป')) {
-          errorMessage = 'การเชื่อมต่อใช้เวลานานเกินไป กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตและลองใหม่อีกครั้ง';
+        if (e.toString().contains('timeout') ||
+            e.toString().contains('นานเกินไป')) {
+          errorMessage =
+              'การเชื่อมต่อใช้เวลานานเกินไป กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตและลองใหม่อีกครั้ง';
         }
-        
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(errorMessage),
@@ -511,21 +530,21 @@ class _HomeScreenState extends State<HomeScreen> {
   //         ),
   //       ),
   //     );
-      
+
   //     // Run the diagnostics
   //     if (Platform.isIOS) {
   //       // Run iOS-specific diagnostics first
   //       await diagnoseIOSNotifications();
   //     }
-      
+
   //     // Run general diagnostics
   //     await runNotificationDiagnostics();
-      
+
   //     // Close progress dialog
   //     if (mounted && Navigator.canPop(context)) {
   //       Navigator.pop(context);
   //     }
-      
+
   //     // Show results dialog
   //     if (mounted) {
   //       showDialog(
@@ -591,35 +610,172 @@ class _HomeScreenState extends State<HomeScreen> {
   void _toggleViewMode() async {
     setState(() {
       // Toggle between 24 hours and all
-      _selectedDateFilter = (_selectedDateFilter == DateFilterOption.all) 
-          ? DateFilterOption.thisWeek 
-          : DateFilterOption.all;
+      _selectedDateFilter =
+          (_selectedDateFilter == DateFilterOption.all)
+              ? DateFilterOption.thisWeek
+              : DateFilterOption.all;
     });
-    
+
     // Save the preference
     _saveDateFilterPreference();
-    
+
     // Refresh the data
     _loadEarthquakes();
+  }
+
+  AM.LatLng _amFrom(LatLng p) => AM.LatLng(p.latitude, p.longitude);
+
+  Widget _buildAppleMiniMap() {
+    // derive initial from default center if needed
+    final AM.LatLng initial = _amFrom(_defaultCenter);
+    return AM.AppleMap(
+      key: ValueKey(_mapType), // Force rebuild when map type changes
+      initialCameraPosition: AM.CameraPosition(
+        target: initial,
+        zoom: _defaultZoom,
+      ),
+      myLocationEnabled: true,
+      compassEnabled: true,
+      mapType: _getAppleMapType(),
+      annotations: _iosAnnotations,
+      onMapCreated: (c) {
+        _iosMapController = c;
+        setState(() => _isMapLoaded = true);
+        // rebuild annotations once map is ready
+        _rebuildIOSAnnotationsFromMarkers();
+        debugPrint('HomeScreen - Apple Map created with map type: $_mapType');
+      },
+    );
+  }
+
+  void _rebuildIOSAnnotationsFromMarkers() {
+    try {
+      final quakes =
+          Provider.of<EarthquakeService>(context, listen: false).earthquakes;
+      setState(() {
+        _iosAnnotations.clear();
+
+        _markers.forEach((id, m) {
+          final pos = m.point;
+
+          // หา quake ตาม id ของ marker
+          Earthquake? q;
+          try {
+            q = quakes.firstWhere((e) => e.id == id);
+          } catch (_) {}
+
+          _iosAnnotations.add(
+            AM.Annotation(
+              annotationId: AM.AnnotationId(id),
+              position: AM.LatLng(pos.latitude, pos.longitude),
+
+              // แตะหมุดก็เปิดรายละเอียดได้
+              // onTap: () {
+              //   if (q != null) {
+              //     _showEarthquakeDetails(q!);
+              //   }
+              // },
+
+              // แตะ callout (แบนเนอร์) แล้วเปิดรายละเอียด
+              infoWindow: AM.InfoWindow(
+                title: q != null ? 'M ${q!.magnitude.toStringAsFixed(1)}' : '',
+                snippet: q?.location ?? '',
+                onTap: () {
+                  // <<< เพิ่ม callback
+                  if (q != null) _showEarthquakeDetails(q!);
+                },
+              ),
+            ),
+          );
+        });
+      });
+    } catch (e) {
+      debugPrint('HomeScreen - rebuild iOS annotations error: $e');
+    }
+  }
+
+  // ฟังก์ชันสำหรับเลือก URL ของ Tile Layer ตามรูปแบบแผนที่
+  String _getTileLayerUrl() {
+    final url = switch (_mapType) {
+      'satellite' =>
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      'terrain' =>
+        'https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png',
+      'hybrid' =>
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+      'normal' || _ => 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    };
+
+    debugPrint('HomeScreen - _getTileLayerUrl: mapType=$_mapType, URL=$url');
+    return url;
+  }
+
+  // ฟังก์ชันสำหรับเลือกรูปแบบแผนที่ใน iOS Apple Maps
+  AM.MapType _getAppleMapType() {
+    final mapType = switch (_mapType) {
+      'satellite' => AM.MapType.satellite,
+      'hybrid' => AM.MapType.hybrid,
+      'terrain' =>
+        AM.MapType.satellite, // iOS ไม่มี terrain type ใช้ satellite แทน
+      'normal' || _ => AM.MapType.standard,
+    };
+
+    debugPrint(
+      'HomeScreen - _getAppleMapType: mapType=$_mapType, AppleMapType=$mapType',
+    );
+    return mapType;
+  }
+
+  // ฟังก์ชันสำหรับไอคอนของรูปแบบแผนที่
+  IconData _getMapTypeIcon() {
+    final icon = switch (_mapType) {
+      'satellite' => Icons.satellite_alt,
+      'terrain' => Icons.terrain,
+      'hybrid' => Icons.layers,
+      'normal' || _ => Icons.map,
+    };
+
+    debugPrint('HomeScreen - _getMapTypeIcon: mapType=$_mapType, icon=$icon');
+    return icon;
+  }
+
+  // ฟังก์ชันสำหรับชื่อของรูปแบบแผนที่
+  String _getMapTypeLabel() {
+    final label = switch (_mapType) {
+      'satellite' => 'ดาวเทียม',
+      'terrain' => 'ภูมิประเทศ',
+      'hybrid' => 'ผสม',
+      'normal' || _ => 'ปกติ',
+    };
+
+    debugPrint(
+      'HomeScreen - _getMapTypeLabel: mapType=$_mapType, label=$label',
+    );
+    return label;
   }
 
   @override
   Widget build(BuildContext context) {
     final earthquakeService = Provider.of<EarthquakeService>(context);
-    List<Earthquake> filteredEarthquakes = earthquakeService.getFilteredEarthquakes();
-    
+    List<Earthquake> filteredEarthquakes =
+        earthquakeService.getFilteredEarthquakes();
+
     // Apply date filtering - replaces _viewOnly24Hours check
-    filteredEarthquakes = _getDateFilteredEarthquakes(filteredEarthquakes, _selectedDateFilter);
+    filteredEarthquakes = _getDateFilteredEarthquakes(
+      filteredEarthquakes,
+      _selectedDateFilter,
+    );
 
     return Scaffold(
       backgroundColor: const Color(0xFF121212), // พื้นหลังสีดำ
       appBar: AppBar(
-        title:  Text('ข้อมูลแผ่นดินไหวล่าสุด',
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
-        ),
+        title: Text(
+          'ข้อมูลแผ่นดินไหวล่าสุด',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
         ),
         backgroundColor: const Color(0xFF121212), // เปลี่ยนเป็นสีดำเหมือนเดิม
         iconTheme: const IconThemeData(color: Colors.white),
@@ -649,10 +805,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   SizedBox(height: 8),
                   Text(
                     'ข้อมูลแผ่นดินไหวล่าสุด',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 14,
-                    ),
+                    style: TextStyle(color: Colors.white70, fontSize: 14),
                   ),
                 ],
               ),
@@ -660,23 +813,30 @@ class _HomeScreenState extends State<HomeScreen> {
             // ปุ่มไปหน้าแผนที่
             ListTile(
               leading: const Icon(Icons.map, color: Colors.white), // ไอคอนสีขาว
-              title: const Text('แผนที่แผ่นดินไหว', style: TextStyle(color: Colors.white)), // ข้อความสีขาว
+              title: const Text(
+                'แผนที่แผ่นดินไหว',
+                style: TextStyle(color: Colors.white),
+              ), // ข้อความสีขาว
               onTap: () {
                 Navigator.pop(context); // ปิด drawer
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (context) => MapScreen(
-                      dataMode: _dataFetchMode,
-                    ),
+                    builder: (context) => MapScreen(dataMode: _dataFetchMode),
                   ),
                 );
               },
             ),
             // ปุ่มวิเคราะห์ความเสี่ยงแผ่นดินไหว
             ListTile(
-              leading: const Icon(Icons.analytics_outlined, color: Colors.white), // ไอคอนสีขาว
-              title: const Text('วิเคราะห์ความเสี่ยงแผ่นดินไหว', style: TextStyle(color: Colors.white)), // ข้อความสีขาว
+              leading: const Icon(
+                Icons.analytics_outlined,
+                color: Colors.white,
+              ), // ไอคอนสีขาว
+              title: const Text(
+                'วิเคราะห์ความเสี่ยงแผ่นดินไหว',
+                style: TextStyle(color: Colors.white),
+              ), // ข้อความสีขาว
               onTap: () {
                 Navigator.pop(context); // ปิด drawer
                 Navigator.push(
@@ -690,8 +850,14 @@ class _HomeScreenState extends State<HomeScreen> {
             const Divider(color: Colors.grey), // สีของเส้นกั้น
             // เลือกแหล่งข้อมูล
             ListTile(
-              leading: const Icon(Icons.data_usage, color: Colors.white), // ไอคอนสีขาว
-              title: const Text('พื้นที่', style: TextStyle(color: Colors.white)), // ข้อความสีขาว
+              leading: const Icon(
+                Icons.data_usage,
+                color: Colors.white,
+              ), // ไอคอนสีขาว
+              title: const Text(
+                'พื้นที่',
+                style: TextStyle(color: Colors.white),
+              ), // ข้อความสีขาว
               trailing: Container(
                 width: 140, // จำกัดความกว้าง
                 child: DropdownButton<DataFetchMode>(
@@ -701,28 +867,31 @@ class _HomeScreenState extends State<HomeScreen> {
                   value: _dataFetchMode,
                   underline: Container(),
                   elevation: 16,
-                  items: DataFetchMode.values.map<DropdownMenuItem<DataFetchMode>>((DataFetchMode value) {
-                    String label;
-                    switch (value) {
-                      case DataFetchMode.global:
-                        label = 'ทั่วโลก';
-                        break;
-                      case DataFetchMode.southeastAsia:
-                        label = 'เอเชียตะวันออกเฉียงใต้';
-                        break;
-                      case DataFetchMode.thailandArea:
-                        label = 'ประเทศไทย';
-                        break;
-                    }
-                    return DropdownMenuItem<DataFetchMode>(
-                      value: value,
-                      child: Text(
-                        label, 
-                        style: const TextStyle(color: Colors.white),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    );
-                  }).toList(),
+                  items:
+                      DataFetchMode.values.map<DropdownMenuItem<DataFetchMode>>(
+                        (DataFetchMode value) {
+                          String label;
+                          switch (value) {
+                            case DataFetchMode.global:
+                              label = 'ทั่วโลก';
+                              break;
+                            case DataFetchMode.southeastAsia:
+                              label = 'เอเชียตะวันออกเฉียงใต้';
+                              break;
+                            case DataFetchMode.thailandArea:
+                              label = 'ประเทศไทย';
+                              break;
+                          }
+                          return DropdownMenuItem<DataFetchMode>(
+                            value: value,
+                            child: Text(
+                              label,
+                              style: const TextStyle(color: Colors.white),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          );
+                        },
+                      ).toList(),
                   onChanged: (DataFetchMode? newValue) {
                     if (newValue != null) {
                       setState(() {
@@ -737,37 +906,54 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             // เลือกรูปแบบแผนที่
             ListTile(
-              leading: const Icon(Icons.layers, color: Colors.white), // ไอคอนสีขาว
-              title: const Text('รูปแบบแผนที่', style: TextStyle(color: Colors.white)), // ข้อความสีขาว
+              leading: const Icon(
+                Icons.layers,
+                color: Colors.white,
+              ), // ไอคอนสีขาว
+              title: const Text(
+                'รูปแบบแผนที่',
+                style: TextStyle(color: Colors.white),
+              ), // ข้อความสีขาว
               trailing: DropdownButton<String>(
-                dropdownColor: const Color(0xFF1E1E1E), // สีพื้นหลังของเมนู dropdown
+                dropdownColor: const Color(
+                  0xFF1E1E1E,
+                ), // สีพื้นหลังของเมนู dropdown
                 iconEnabledColor: Colors.white, // สีไอคอน dropdown
                 value: _mapType,
                 underline: Container(),
                 elevation: 16,
-                items: <String>['normal', 'satellite', 'terrain', 'hybrid'].map<DropdownMenuItem<String>>((String value) {
-                  String label;
-                  switch (value) {
-                    case 'normal':
-                      label = 'ปกติ';
-                      break;
-                    case 'satellite':
-                      label = 'ดาวเทียม';
-                      break;
-                    case 'terrain':
-                      label = 'ภูมิประเทศ';
-                      break;
-                    case 'hybrid':
-                      label = 'ผสม';
-                      break;
-                    default:
-                      label = 'ปกติ';
-                  }
-                  return DropdownMenuItem<String>(
-                    value: value,
-                    child: Text(label, style: const TextStyle(color: Colors.white)), // ข้อความในเมนู dropdown สีขาว
-                  );
-                }).toList(),
+                items:
+                    <String>[
+                      'normal',
+                      'satellite',
+                      'terrain',
+                      'hybrid',
+                    ].map<DropdownMenuItem<String>>((String value) {
+                      String label;
+                      switch (value) {
+                        case 'normal':
+                          label = 'ปกติ';
+                          break;
+                        case 'satellite':
+                          label = 'ดาวเทียม';
+                          break;
+                        case 'terrain':
+                          label = 'ภูมิประเทศ';
+                          break;
+                        case 'hybrid':
+                          label = 'ผสม';
+                          break;
+                        default:
+                          label = 'ปกติ';
+                      }
+                      return DropdownMenuItem<String>(
+                        value: value,
+                        child: Text(
+                          label,
+                          style: const TextStyle(color: Colors.white),
+                        ), // ข้อความในเมนู dropdown สีขาว
+                      );
+                    }).toList(),
                 onChanged: (String? newValue) {
                   if (newValue != null) {
                     setState(() {
@@ -781,8 +967,14 @@ class _HomeScreenState extends State<HomeScreen> {
             // เพิ่มเมนูอื่นๆที่เดิมอยู่ใน PopupMenuButton ได้ตามต้องการ
             const Divider(color: Colors.grey), // สีของเส้นกั้น
             ListTile(
-              leading: const Icon(Icons.settings, color: Colors.white), // ไอคอนสีขาว
-              title: const Text('การตั้งค่าการแจ้งเตือน', style: TextStyle(color: Colors.white)), // ข้อความสีขาว
+              leading: const Icon(
+                Icons.settings,
+                color: Colors.white,
+              ), // ไอคอนสีขาว
+              title: const Text(
+                'การตั้งค่าการแจ้งเตือน',
+                style: TextStyle(color: Colors.white),
+              ), // ข้อความสีขาว
               onTap: () {
                 Navigator.pop(context); // ปิด drawer
                 Navigator.push(
@@ -803,30 +995,120 @@ class _HomeScreenState extends State<HomeScreen> {
             height: MediaQuery.of(context).size.height * 0.4,
             child: Stack(
               children: [
-                FlutterMap(
-                  mapController: _mapController,
-                  options: MapOptions(
-                    initialCenter: _defaultCenter,
-                    initialZoom: _defaultZoom,
-                    minZoom: 3.0, // ระดับซูมออกน้อยสุด (ป้องกันซูมออกไกลเกินไปแล้วค้าง)
-                    maxZoom: 18.0, // ระดับซูมเข้ามากสุด
-                    onMapReady: () {
-                      setState(() => _isMapLoaded = true);
-                      _createMarkers();
-                    },
+                if (Platform.isIOS)
+                  _buildAppleMiniMap()
+                else
+                  FlutterMap(
+                    mapController: _mapController,
+                    options: MapOptions(
+                      initialCenter: _defaultCenter,
+                      initialZoom: _defaultZoom,
+                      minZoom:
+                          3.0, // ระดับซูมออกน้อยสุด (ป้องกันซูมออกไกลเกินไปแล้วค้าง)
+                      maxZoom: 18.0, // ระดับซูมเข้ามากสุด
+                      onMapReady: () {
+                        setState(() => _isMapLoaded = true);
+                        _createMarkers();
+                        debugPrint(
+                          'HomeScreen - Flutter Map ready with map type: $_mapType',
+                        );
+                      },
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate: _getTileLayerUrl(),
+                        subdomains: ['a', 'b', 'c'],
+                      ),
+                      PopupMarkerLayer(
+                        options: PopupMarkerLayerOptions(
+                          popupController: _popupController,
+                          markers: _markers.values.toList(),
+                          popupDisplayOptions: PopupDisplayOptions(
+                            builder: (BuildContext ctx, Marker marker) {
+                              // หา quake จาก marker ที่กด
+                              final quakes =
+                                  Provider.of<EarthquakeService>(
+                                    context,
+                                    listen: false,
+                                  ).earthquakes;
+                              final String? quakeId =
+                                  _markers.entries
+                                      .firstWhere(
+                                        (e) => identical(e.value, marker),
+                                        orElse: () => MapEntry('', marker),
+                                      )
+                                      .key;
+                              final quake =
+                                  (quakeId != null && quakeId.isNotEmpty)
+                                      ? quakes.firstWhere(
+                                        (e) => e.id == quakeId,
+                                        orElse: () => quakes.first,
+                                      )
+                                      : quakes.first;
+
+                              return GestureDetector(
+                                behavior:
+                                    HitTestBehavior
+                                        .opaque, // <<< รับทัชทั้งบล็อก
+                                onTap: () => _showEarthquakeDetails(quake),
+                                child: Container(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 260,
+                                  ),
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF1E1E1E),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(color: Colors.white24),
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'M ${quake.magnitude.toStringAsFixed(1)} • ${quake.location}',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        DateFormat(
+                                          'dd/MM/yyyy HH:mm',
+                                        ).format(quake.time),
+                                        style: const TextStyle(
+                                          color: Colors.grey,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Align(
+                                        alignment: Alignment.centerRight,
+                                        child: TextButton(
+                                          onPressed:
+                                              () =>
+                                                  _popupController
+                                                      .hideAllPopups(),
+                                          child: const Text(
+                                            'ปิด',
+                                            style: TextStyle(
+                                              color: Colors.orange,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  children: [
-                    TileLayer(
-                      urlTemplate: _mapType == 'satellite' 
-                         ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-                         : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      subdomains: ['a', 'b', 'c'],
-                    ),
-                    MarkerLayer(
-                      markers: _markers.values.toList(),
-                    ),
-                  ],
-                 ),
                 // Add multiple map control buttons
                 Positioned(
                   right: 16,
@@ -834,6 +1116,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // Map type selection button
+                      FloatingActionButton(
+                        mini: true,
+                        onPressed: () => _showMapTypeMenu(context),
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.orange,
+                        child: Icon(_getMapTypeIcon()),
+                        tooltip: 'เลือกรูปแบบแผนที่',
+                        heroTag: 'unique_home_map_type_fab',
+                      ),
+                      const SizedBox(height: 8),
                       // Current location button
                       FloatingActionButton(
                         mini: true,
@@ -861,7 +1154,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
-          
+
           // แสดงสถานะการอัพเดทแต่ไม่มีปุ่มควบคุม
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -888,7 +1181,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
-          
+
           // รายการแผ่นดินไหวส่วนล่าง
           Expanded(
             // Wrap ListView with RefreshIndicator ให้คงอยู่เพื่อผู้ใช้สามารถดึงลงเพื่อรีเฟรชได้
@@ -906,7 +1199,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       _zoomToSelectedEarthquake(quake);
                     },
                     child: // รายการแผ่นดินไหวที่มีอยู่เดิม
-                    _buildEarthquakeItem(quake)
+                        _buildEarthquakeItem(quake),
                   );
                 },
               ),
@@ -921,11 +1214,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Update the filter options bottom sheet
   void _showFilterOptions(BuildContext context) {
-    final earthquakeService = Provider.of<EarthquakeService>(context, listen: false);
-    
+    final earthquakeService = Provider.of<EarthquakeService>(
+      context,
+      listen: false,
+    );
+
     // Create a temporary filter option to track changes
     DateFilterOption tempDateFilter = _selectedDateFilter;
-    
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -937,21 +1233,33 @@ class _HomeScreenState extends State<HomeScreen> {
           builder: (context, setState) {
             // Calculate counts for each date filter
             final allEarthquakes = earthquakeService.earthquakes;
-            
-            final todayCount = _getDateFilteredEarthquakes(
-              allEarthquakes, DateFilterOption.today).length;
-              
-            final weekCount = _getDateFilteredEarthquakes(
-              allEarthquakes, DateFilterOption.thisWeek).length;
-              
-            final monthCount = _getDateFilteredEarthquakes(
-              allEarthquakes, DateFilterOption.thisMonth).length;
-              
-            final threeMonthsCount = _getDateFilteredEarthquakes(
-              allEarthquakes, DateFilterOption.threeMonths).length;
-            
+
+            final todayCount =
+                _getDateFilteredEarthquakes(
+                  allEarthquakes,
+                  DateFilterOption.today,
+                ).length;
+
+            final weekCount =
+                _getDateFilteredEarthquakes(
+                  allEarthquakes,
+                  DateFilterOption.thisWeek,
+                ).length;
+
+            final monthCount =
+                _getDateFilteredEarthquakes(
+                  allEarthquakes,
+                  DateFilterOption.thisMonth,
+                ).length;
+
+            final threeMonthsCount =
+                _getDateFilteredEarthquakes(
+                  allEarthquakes,
+                  DateFilterOption.threeMonths,
+                ).length;
+
             final allCount = allEarthquakes.length;
-            
+
             return DraggableScrollableSheet(
               initialChildSize: 0.7,
               minChildSize: 0.3,
@@ -975,7 +1283,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                             ),
                             const Divider(),
-                            
+
                             // Date filter options
                             const Text(
                               'ช่วงเวลา:',
@@ -984,9 +1292,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
-                            
+
                             const SizedBox(height: 8),
-                            
+
                             // Date range options with better styling
                             Container(
                               decoration: BoxDecoration(
@@ -1004,18 +1312,29 @@ class _HomeScreenState extends State<HomeScreen> {
                                         const Text('วันนี้'),
                                         const Spacer(),
                                         Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 2,
+                                          ),
                                           decoration: BoxDecoration(
                                             color: Colors.blue.shade100,
-                                            borderRadius: BorderRadius.circular(12),
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
                                           ),
-                                          child: Text('$todayCount รายการ', 
-                                            style: TextStyle(fontSize: 12, color: Colors.blue.shade800),
+                                          child: Text(
+                                            '$todayCount รายการ',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.blue.shade800,
+                                            ),
                                           ),
                                         ),
                                       ],
                                     ),
-                                    subtitle: const Text('แสดงเฉพาะแผ่นดินไหววันนี้'),
+                                    subtitle: const Text(
+                                      'แสดงเฉพาะแผ่นดินไหววันนี้',
+                                    ),
                                     value: DateFilterOption.today,
                                     groupValue: tempDateFilter,
                                     onChanged: (value) {
@@ -1024,7 +1343,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                       });
                                     },
                                   ),
-                                  const Divider(height: 1, indent: 16, endIndent: 16),
+                                  const Divider(
+                                    height: 1,
+                                    indent: 16,
+                                    endIndent: 16,
+                                  ),
                                   RadioListTile<DateFilterOption>(
                                     title: Row(
                                       children: [
@@ -1033,18 +1356,29 @@ class _HomeScreenState extends State<HomeScreen> {
                                         const Text('สัปดาห์นี้'),
                                         const Spacer(),
                                         Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 2,
+                                          ),
                                           decoration: BoxDecoration(
                                             color: Colors.blue.shade100,
-                                            borderRadius: BorderRadius.circular(12),
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
                                           ),
-                                          child: Text('$weekCount รายการ', 
-                                            style: TextStyle(fontSize: 12, color: Colors.blue.shade800),
+                                          child: Text(
+                                            '$weekCount รายการ',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.blue.shade800,
+                                            ),
                                           ),
                                         ),
                                       ],
                                     ),
-                                    subtitle: const Text('แสดงแผ่นดินไหวในสัปดาห์นี้'),
+                                    subtitle: const Text(
+                                      'แสดงแผ่นดินไหวในสัปดาห์นี้',
+                                    ),
                                     value: DateFilterOption.thisWeek,
                                     groupValue: tempDateFilter,
                                     onChanged: (value) {
@@ -1053,27 +1387,45 @@ class _HomeScreenState extends State<HomeScreen> {
                                       });
                                     },
                                   ),
-                                  const Divider(height: 1, indent: 16, endIndent: 16),
+                                  const Divider(
+                                    height: 1,
+                                    indent: 16,
+                                    endIndent: 16,
+                                  ),
                                   RadioListTile<DateFilterOption>(
                                     title: Row(
                                       children: [
-                                        const Icon(Icons.calendar_month, size: 18),
+                                        const Icon(
+                                          Icons.calendar_month,
+                                          size: 18,
+                                        ),
                                         const SizedBox(width: 8),
                                         const Text('เดือนนี้'),
                                         const Spacer(),
                                         Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 2,
+                                          ),
                                           decoration: BoxDecoration(
                                             color: Colors.blue.shade100,
-                                            borderRadius: BorderRadius.circular(12),
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
                                           ),
-                                          child: Text('$monthCount รายการ', 
-                                            style: TextStyle(fontSize: 12, color: Colors.blue.shade800),
+                                          child: Text(
+                                            '$monthCount รายการ',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.blue.shade800,
+                                            ),
                                           ),
                                         ),
                                       ],
                                     ),
-                                    subtitle: const Text('แสดงแผ่นดินไหวในเดือนนี้'),
+                                    subtitle: const Text(
+                                      'แสดงแผ่นดินไหวในเดือนนี้',
+                                    ),
                                     value: DateFilterOption.thisMonth,
                                     groupValue: tempDateFilter,
                                     onChanged: (value) {
@@ -1082,27 +1434,45 @@ class _HomeScreenState extends State<HomeScreen> {
                                       });
                                     },
                                   ),
-                                  const Divider(height: 1, indent: 16, endIndent: 16),
+                                  const Divider(
+                                    height: 1,
+                                    indent: 16,
+                                    endIndent: 16,
+                                  ),
                                   RadioListTile<DateFilterOption>(
                                     title: Row(
                                       children: [
-                                        const Icon(Icons.calendar_view_month, size: 18),
+                                        const Icon(
+                                          Icons.calendar_view_month,
+                                          size: 18,
+                                        ),
                                         const SizedBox(width: 8),
                                         const Text('3 เดือนที่ผ่านมา'),
                                         const Spacer(),
                                         Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 2,
+                                          ),
                                           decoration: BoxDecoration(
                                             color: Colors.blue.shade100,
-                                            borderRadius: BorderRadius.circular(12),
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
                                           ),
-                                          child: Text('$threeMonthsCount รายการ', 
-                                            style: TextStyle(fontSize: 12, color: Colors.blue.shade800),
+                                          child: Text(
+                                            '$threeMonthsCount รายการ',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.blue.shade800,
+                                            ),
                                           ),
                                         ),
                                       ],
                                     ),
-                                    subtitle: const Text('แสดงแผ่นดินไหวย้อนหลัง 3 เดือน'),
+                                    subtitle: const Text(
+                                      'แสดงแผ่นดินไหวย้อนหลัง 3 เดือน',
+                                    ),
                                     value: DateFilterOption.threeMonths,
                                     groupValue: tempDateFilter,
                                     onChanged: (value) {
@@ -1111,27 +1481,45 @@ class _HomeScreenState extends State<HomeScreen> {
                                       });
                                     },
                                   ),
-                                  const Divider(height: 1, indent: 16, endIndent: 16),
+                                  const Divider(
+                                    height: 1,
+                                    indent: 16,
+                                    endIndent: 16,
+                                  ),
                                   RadioListTile<DateFilterOption>(
                                     title: Row(
                                       children: [
-                                        const Icon(Icons.all_inclusive, size: 18),
+                                        const Icon(
+                                          Icons.all_inclusive,
+                                          size: 18,
+                                        ),
                                         const SizedBox(width: 8),
                                         const Text('ทั้งหมด'),
                                         const Spacer(),
                                         Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 2,
+                                          ),
                                           decoration: BoxDecoration(
                                             color: Colors.blue.shade100,
-                                            borderRadius: BorderRadius.circular(12),
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
                                           ),
-                                          child: Text('$allCount รายการ', 
-                                            style: TextStyle(fontSize: 12, color: Colors.blue.shade800),
+                                          child: Text(
+                                            '$allCount รายการ',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.blue.shade800,
+                                            ),
                                           ),
                                         ),
                                       ],
                                     ),
-                                    subtitle: const Text('แสดงข้อมูลทั้งหมดที่มี'),
+                                    subtitle: const Text(
+                                      'แสดงข้อมูลทั้งหมดที่มี',
+                                    ),
                                     value: DateFilterOption.all,
                                     groupValue: tempDateFilter,
                                     onChanged: (value) {
@@ -1166,7 +1554,9 @@ class _HomeScreenState extends State<HomeScreen> {
                             child: OutlinedButton(
                               onPressed: () => Navigator.pop(context),
                               style: OutlinedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                ),
                               ),
                               child: const Text('ยกเลิก'),
                             ),
@@ -1181,16 +1571,16 @@ class _HomeScreenState extends State<HomeScreen> {
                                 });
                                 Navigator.pop(context);
                               },
-                              
+
                               style: ElevatedButton.styleFrom(
                                 foregroundColor: Colors.white,
                                 backgroundColor: Colors.blue,
-                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                ),
                               ),
                               child: const Text('นำไปใช้'),
-                              
                             ),
-                            
                           ),
                         ],
                       ),
@@ -1236,8 +1626,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // คำนวณระยะห่างจากตำแหน่งผู้ใช้
     String distanceText = 'ไม่ทราบระยะห่าง';
-    if (_currentUserLocation != null && 
-        _currentUserLocation!.latitude != null && 
+    if (_currentUserLocation != null &&
+        _currentUserLocation!.latitude != null &&
         _currentUserLocation!.longitude != null) {
       final distance = _calculateDistance(
         _currentUserLocation!.latitude!,
@@ -1385,7 +1775,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.place, color: Colors.red, size: 16),
+                            const Icon(
+                              Icons.place,
+                              color: Colors.red,
+                              size: 16,
+                            ),
                             const SizedBox(width: 4),
                             Text(
                               distanceText,
@@ -1413,8 +1807,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // คำนวณระยะห่างจากตำแหน่งผู้ใช้
     String distanceInfo = 'ไม่ทราบระยะห่าง';
-    if (_currentUserLocation != null && 
-        _currentUserLocation!.latitude != null && 
+    if (_currentUserLocation != null &&
+        _currentUserLocation!.latitude != null &&
         _currentUserLocation!.longitude != null) {
       final distance = _calculateDistance(
         _currentUserLocation!.latitude!,
@@ -1477,7 +1871,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   _buildInfoRow('สถานที่:', quake.location),
-                  _buildInfoRow('เวลา:', DateFormat('dd/MM/yyyy HH:mm:ss').format(quake.time)),
+                  _buildInfoRow(
+                    'เวลา:',
+                    DateFormat('dd/MM/yyyy HH:mm:ss').format(quake.time),
+                  ),
                   _buildInfoRow('ความลึก:', '${quake.depth} กม.'),
                   _buildInfoRow('ระยะห่างจากคุณ:', distanceInfo),
                   _buildInfoRow('ละติจูด:', quake.latitude.toString()),
@@ -1487,12 +1884,21 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             actions: [
               TextButton(
-                child: const Text('ปิด', style: TextStyle(color: Colors.orange)),
+                child: const Text(
+                  'ปิด',
+                  style: TextStyle(color: Colors.orange),
+                ),
                 onPressed: () => Navigator.pop(context),
               ),
+
+              // ปุ่มเปิด Google Maps (คงไว้)
               ElevatedButton.icon(
                 onPressed: () {
-                  _openInGoogleMaps(quake.latitude, quake.longitude, quake.location);
+                  _openInGoogleMaps(
+                    quake.latitude,
+                    quake.longitude,
+                    quake.location,
+                  );
                 },
                 icon: const Icon(Icons.map),
                 label: const Text('Google Maps'),
@@ -1501,11 +1907,37 @@ class _HomeScreenState extends State<HomeScreen> {
                   foregroundColor: Colors.white,
                 ),
               ),
+
+              // 🔥 ปุ่มใหม่: เปิดแผนที่แบบเต็ม (ไปหน้า MapScreen)
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context); // ปิด dialog ก่อน
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder:
+                          (_) => MapScreen(
+                            // MapScreen ใช้ enum เดียวกันแต่ import แบบ alias ในไฟล์นั้น
+                            dataMode: DataFetchMode.values.byName(
+                              _dataFetchMode.name,
+                            ),
+                            selectedEarthquake: quake,
+                          ),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.fullscreen),
+                label: const Text('เปิดแผนที่'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                ),
+              ),
             ],
           ),
     );
   }
-  
+
   Widget _buildInfoRow(String label, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -1522,10 +1954,7 @@ class _HomeScreenState extends State<HomeScreen> {
           Expanded(
             child: Text(
               value,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 15,
-              ),
+              style: const TextStyle(color: Colors.white, fontSize: 15),
             ),
           ),
         ],
@@ -1546,8 +1975,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showRegionSelector(BuildContext context) {
-    final earthquakeService = Provider.of<EarthquakeService>(context, listen: false);
-    
+    final earthquakeService = Provider.of<EarthquakeService>(
+      context,
+      listen: false,
+    );
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1577,7 +2009,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
                       const Divider(),
-                      
+
                       // Region selector
                       Expanded(
                         child: ListView.builder(
@@ -1592,21 +2024,31 @@ class _HomeScreenState extends State<HomeScreen> {
                                 style: const TextStyle(fontSize: 12),
                               ),
                               leading: const Icon(Icons.public),
-                              trailing: _selectedRegionCode == region.code
-                                  ? const Icon(Icons.check_circle, color: Colors.green)
-                                  : null,
+                              trailing:
+                                  _selectedRegionCode == region.code
+                                      ? const Icon(
+                                        Icons.check_circle,
+                                        color: Colors.green,
+                                      )
+                                      : null,
                               onTap: () {
                                 // Update both the local state and service
                                 this.setState(() {
                                   _selectedRegionCode = region.code;
                                 });
-                                earthquakeService.setSelectedRegion(region.code);
-                                debugPrint('Selected region: ${region.name} (${region.code})');
-                                debugPrint('Current _selectedRegionCode value: $_selectedRegionCode');
-                                
+                                earthquakeService.setSelectedRegion(
+                                  region.code,
+                                );
+                                debugPrint(
+                                  'Selected region: ${region.name} (${region.code})',
+                                );
+                                debugPrint(
+                                  'Current _selectedRegionCode value: $_selectedRegionCode',
+                                );
+
                                 // Force a refresh of the earthquake list
                                 _loadEarthquakes(checkForNotifications: false);
-                                
+
                                 Navigator.pop(context);
                               },
                             );
@@ -1631,24 +2073,35 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // Add method to get filtered earthquakes by date range
-  List<Earthquake> _getDateFilteredEarthquakes(List<Earthquake> earthquakes, DateFilterOption filter) {
+  List<Earthquake> _getDateFilteredEarthquakes(
+    List<Earthquake> earthquakes,
+    DateFilterOption filter,
+  ) {
     switch (filter) {
       case DateFilterOption.today:
         final startDate = DateHelper.getStartOfToday();
-        return earthquakes.where((quake) => quake.time.isAfter(startDate)).toList();
-      
+        return earthquakes
+            .where((quake) => quake.time.isAfter(startDate))
+            .toList();
+
       case DateFilterOption.thisWeek:
         final startDate = DateHelper.getStartOfWeek();
-        return earthquakes.where((quake) => quake.time.isAfter(startDate)).toList();
-      
+        return earthquakes
+            .where((quake) => quake.time.isAfter(startDate))
+            .toList();
+
       case DateFilterOption.thisMonth:
         final startDate = DateHelper.getStartOfMonth();
-        return earthquakes.where((quake) => quake.time.isAfter(startDate)).toList();
-      
+        return earthquakes
+            .where((quake) => quake.time.isAfter(startDate))
+            .toList();
+
       case DateFilterOption.threeMonths:
         final startDate = DateHelper.getStartOfThreeMonthsAgo();
-        return earthquakes.where((quake) => quake.time.isAfter(startDate)).toList();
-      
+        return earthquakes
+            .where((quake) => quake.time.isAfter(startDate))
+            .toList();
+
       case DateFilterOption.all:
       default:
         return earthquakes;
@@ -1687,7 +2140,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await prefs.setString('dataFetchMode', _dataFetchMode.toString());
     debugPrint('Saved data fetch mode: $_dataFetchMode');
   }
-  
+
   // เพิ่มแสดงชื่อแหล่งข้อมูลที่เลือก
   String _getDataSourceName() {
     switch (_dataFetchMode) {
@@ -1699,135 +2152,151 @@ class _HomeScreenState extends State<HomeScreen> {
         return 'ประเทศไทย';
     }
   }
-  
+
   // แสดงเมนูเลือกโหลดข้อมูล
   void _showDataSourceMenu(BuildContext context) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('เลือกแหล่งข้อมูล'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              title: const Text('เอเชียตะวันออกเฉียงใต้'),
-              subtitle: const Text('ข้อมูลแผ่นดินไหวในภูมิภาคเอเชียตะวันออกเฉียงใต้'),
-              leading: Radio<DataFetchMode>(
-                value: DataFetchMode.southeastAsia,
-                groupValue: _dataFetchMode,
-                onChanged: (value) {
-                  Navigator.pop(context);
-                  setState(() {
-                    _dataFetchMode = value!;
-                    _saveDataFetchMode();
-                  });
-                  _loadEarthquakes();
-                },
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                setState(() {
-                  _dataFetchMode = DataFetchMode.southeastAsia;
-                  _saveDataFetchMode();
-                });
-                _loadEarthquakes();
-              },
+      builder:
+          (context) => AlertDialog(
+            title: const Text('เลือกแหล่งข้อมูล'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  title: const Text('เอเชียตะวันออกเฉียงใต้'),
+                  subtitle: const Text(
+                    'ข้อมูลแผ่นดินไหวในภูมิภาคเอเชียตะวันออกเฉียงใต้',
+                  ),
+                  leading: Radio<DataFetchMode>(
+                    value: DataFetchMode.southeastAsia,
+                    groupValue: _dataFetchMode,
+                    onChanged: (value) {
+                      Navigator.pop(context);
+                      setState(() {
+                        _dataFetchMode = value!;
+                        _saveDataFetchMode();
+                      });
+                      _loadEarthquakes();
+                    },
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() {
+                      _dataFetchMode = DataFetchMode.southeastAsia;
+                      _saveDataFetchMode();
+                    });
+                    _loadEarthquakes();
+                  },
+                ),
+                ListTile(
+                  title: const Text('ประเทศไทย'),
+                  subtitle: const Text(
+                    'เฉพาะไทย ลาว กัมพูชา พม่า และมาเลเซียตอนเหนือ',
+                  ),
+                  leading: Radio<DataFetchMode>(
+                    value: DataFetchMode.thailandArea,
+                    groupValue: _dataFetchMode,
+                    onChanged: (value) {
+                      Navigator.pop(context);
+                      setState(() {
+                        _dataFetchMode = value!;
+                        _saveDataFetchMode();
+                      });
+                      _loadEarthquakes();
+                    },
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() {
+                      _dataFetchMode = DataFetchMode.thailandArea;
+                      _saveDataFetchMode();
+                    });
+                    _loadEarthquakes();
+                  },
+                ),
+                ListTile(
+                  title: const Text('ทั่วโลก'),
+                  subtitle: const Text(
+                    'ข้อมูลแผ่นดินไหวทั่วโลก (จะมีข้อมูลมากกว่า)',
+                  ),
+                  leading: Radio<DataFetchMode>(
+                    value: DataFetchMode.global,
+                    groupValue: _dataFetchMode,
+                    onChanged: (value) {
+                      Navigator.pop(context);
+                      setState(() {
+                        _dataFetchMode = value!;
+                        _saveDataFetchMode();
+                      });
+                      _loadEarthquakes();
+                    },
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() {
+                      _dataFetchMode = DataFetchMode.global;
+                      _saveDataFetchMode();
+                    });
+                    _loadEarthquakes();
+                  },
+                ),
+              ],
             ),
-            ListTile(
-              title: const Text('ประเทศไทย'),
-              subtitle: const Text('เฉพาะไทย ลาว กัมพูชา พม่า และมาเลเซียตอนเหนือ'),
-              leading: Radio<DataFetchMode>(
-                value: DataFetchMode.thailandArea,
-                groupValue: _dataFetchMode,
-                onChanged: (value) {
-                  Navigator.pop(context);
-                  setState(() {
-                    _dataFetchMode = value!;
-                    _saveDataFetchMode();
-                  });
-                  _loadEarthquakes();
-                },
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('ปิด'),
               ),
-              onTap: () {
-                Navigator.pop(context);
-                setState(() {
-                  _dataFetchMode = DataFetchMode.thailandArea;
-                  _saveDataFetchMode();
-                });
-                _loadEarthquakes();
-              },
-            ),
-            ListTile(
-              title: const Text('ทั่วโลก'),
-              subtitle: const Text('ข้อมูลแผ่นดินไหวทั่วโลก (จะมีข้อมูลมากกว่า)'),
-              leading: Radio<DataFetchMode>(
-                value: DataFetchMode.global,
-                groupValue: _dataFetchMode,
-                onChanged: (value) {
-                  Navigator.pop(context);
-                  setState(() {
-                    _dataFetchMode = value!;
-                    _saveDataFetchMode();
-                  });
-                  _loadEarthquakes();
-                },
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                setState(() {
-                  _dataFetchMode = DataFetchMode.global;
-                  _saveDataFetchMode();
-                });
-                _loadEarthquakes();
-              },
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('ปิด'),
+            ],
           ),
-        ],
-      ),
     );
   }
 
   // Create map markers for earthquakes
   void _createMarkers() {
-    if (!_isMapLoaded) return;
-    
-    final earthquakeService = Provider.of<EarthquakeService>(context, listen: false);
-    final List<Earthquake> displayedEarthquakes = _getFilteredEarthquakes(earthquakeService.earthquakes);
-    
+    if (!_isMapLoaded) {
+      debugPrint('HomeScreen - Map not loaded yet, skipping marker creation');
+      return;
+    }
+
+    final earthquakeService = Provider.of<EarthquakeService>(
+      context,
+      listen: false,
+    );
+    final List<Earthquake> displayedEarthquakes = _getFilteredEarthquakes(
+      earthquakeService.earthquakes,
+    );
+
     setState(() {
       _markers.clear();
-      
+
       for (final quake in displayedEarthquakes) {
         // Skip invalid coordinates
         if (quake.latitude == 0 && quake.longitude == 0) continue;
-        
+
         final marker = Marker(
+          key: ValueKey(quake.id),
           width: 40.0,
           height: 40.0,
           point: LatLng(quake.latitude, quake.longitude),
-          child: GestureDetector(
-            onTap: () {
-              _showQuakeDetails(quake);
-            },
-            child: _getMarkerIcon(quake.magnitude),
-          ),
+          child: _getMarkerIcon(quake.magnitude),
         );
-        
+
         _markers[quake.id] = marker;
       }
     });
+
+    // อัพเดทมาร์คเกอร์สำหรับ Apple Maps
+    if (Platform.isIOS) {
+      _rebuildIOSAnnotationsFromMarkers();
+    }
   }
-  
+
   // Get marker icon based on earthquake magnitude
   Widget _getMarkerIcon(double magnitude) {
     Color color;
-    
+
     // Define color based on magnitude
     if (magnitude < 3.0) {
       color = Colors.green;
@@ -1840,7 +2309,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } else {
       color = Colors.red;
     }
-    
+
     return Container(
       decoration: BoxDecoration(
         color: color.withOpacity(0.8),
@@ -1866,13 +2335,15 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-  
+
   // ฟังก์ชันซูมไปยังแผ่นดินไหวที่เลือก
   void _zoomToSelectedEarthquake(Earthquake quake) {
     if (quake.latitude == 0 && quake.longitude == 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('ไม่สามารถแสดงตำแหน่งแผ่นดินไหวได้เนื่องจากข้อมูลพิกัดไม่ถูกต้อง'),
+          content: Text(
+            'ไม่สามารถแสดงตำแหน่งแผ่นดินไหวได้เนื่องจากข้อมูลพิกัดไม่ถูกต้อง',
+          ),
           duration: Duration(seconds: 3),
         ),
       );
@@ -1880,45 +2351,78 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     // ซูมไปยังตำแหน่งแผ่นดินไหว
-    _mapController.move(LatLng(quake.latitude, quake.longitude), 10.0);
+    if (Platform.isIOS && _iosMapController != null) {
+      _iosMapController!.animateCamera(
+        AM.CameraUpdate.newLatLngZoom(
+          AM.LatLng(quake.latitude, quake.longitude),
+          10,
+        ),
+      );
+      debugPrint('HomeScreen - Zoomed iOS map to earthquake: ${quake.id}');
+    } else if (_isMapLoaded) {
+      _mapController.move(LatLng(quake.latitude, quake.longitude), 10.0);
+      debugPrint('HomeScreen - Zoomed Flutter map to earthquake: ${quake.id}');
+    }
   }
-  
+
   // เพิ่มฟังก์ชันศูนย์กลางแผนที่เพื่อแสดงแผ่นดินไหวทั้งหมด
   void _centerMapOnAllEarthquakes() {
-    if (_markers.isEmpty) return;
-    
+    // iOS: fit camera to include all markers
+    if (Platform.isIOS && _iosMapController != null && _markers.isNotEmpty) {
+      double minLat = 90.0, maxLat = -90.0, minLng = 180.0, maxLng = -180.0;
+      for (final m in _markers.values) {
+        final p = m.point;
+        if (p.latitude < minLat) minLat = p.latitude;
+        if (p.latitude > maxLat) maxLat = p.latitude;
+        if (p.longitude < minLng) minLng = p.longitude;
+        if (p.longitude > maxLng) maxLng = p.longitude;
+      }
+      final bounds = AM.LatLngBounds(
+        southwest: AM.LatLng(minLat, minLng),
+        northeast: AM.LatLng(maxLat, maxLng),
+      );
+      _iosMapController!.animateCamera(
+        AM.CameraUpdate.newLatLngBounds(bounds, 48),
+      );
+      debugPrint('HomeScreen - Centered iOS map on all earthquakes');
+      return;
+    }
+
+    if (_markers.isEmpty || !_isMapLoaded) return;
+
     double minLat = 90.0;
     double maxLat = -90.0;
     double minLng = 180.0;
     double maxLng = -180.0;
-    
+
     for (final marker in _markers.values) {
       final position = marker.point;
-      
+
       if (position.latitude < minLat) minLat = position.latitude;
       if (position.latitude > maxLat) maxLat = position.latitude;
       if (position.longitude < minLng) minLng = position.longitude;
       if (position.longitude > maxLng) maxLng = position.longitude;
     }
-    
+
     // Add padding around edges
     minLat -= 2.0;
     maxLat += 2.0;
     minLng -= 2.0;
     maxLng += 2.0;
-    
+
     // Calculate center point and zoom level to fit bounds
     final centerLat = (minLat + maxLat) / 2;
     final centerLng = (minLng + maxLng) / 2;
-    
+
     // Calculate appropriate zoom level
     final latZoom = _calculateZoomLevel(maxLat - minLat);
     final lngZoom = _calculateZoomLevel(maxLng - minLng);
     final zoom = min(latZoom, lngZoom);
-    
+
     _mapController.move(LatLng(centerLat, centerLng), zoom);
+    debugPrint('HomeScreen - Centered Flutter map on all earthquakes');
   }
-  
+
   // Calculate appropriate zoom level for a given span
   double _calculateZoomLevel(double span) {
     // Simple algorithm to calculate zoom based on span
@@ -1934,111 +2438,144 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _saveMapType() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('mapType', _mapType);
-    debugPrint('Saved map type: $_mapType');
+    debugPrint('HomeScreen - Saved map type: $_mapType');
+
+    // Force rebuild แผนที่เพื่อแสดงรูปแบบใหม่
+    setState(() {});
+    debugPrint('HomeScreen - Force rebuild map after map type change');
+
+    // อัพเดทมาร์คเกอร์สำหรับ Apple Maps
+    if (Platform.isIOS && _iosMapController != null) {
+      _rebuildIOSAnnotationsFromMarkers();
+      debugPrint(
+        'HomeScreen - Updated iOS map annotations after map type change',
+      );
+    }
+
+    // อัพเดทมาร์คเกอร์สำหรับ Flutter Map
+    if (!Platform.isIOS && _isMapLoaded) {
+      _createMarkers();
+      debugPrint(
+        'HomeScreen - Updated Flutter map markers after map type change',
+      );
+    }
+
+    // แสดงข้อความแจ้งเตือนผู้ใช้
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('เปลี่ยนรูปแบบแผนที่เป็น: ${_getMapTypeLabel()}'),
+          duration: const Duration(seconds: 2),
+          backgroundColor: Colors.blue,
+        ),
+      );
+      debugPrint('HomeScreen - Showed map type change notification');
+    }
   }
-  
+
   // แสดงเมนูเลือกชนิดของแผนที่
   void _showMapTypeMenu(BuildContext context) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('เลือกรูปแบบแผนที่'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              title: const Text('แผนที่ปกติ'),
-              leading: Radio<String>(
-                value: 'normal',
-                groupValue: _mapType,
-                onChanged: (value) {
-                  Navigator.pop(context);
-                  setState(() {
-                    _mapType = value!;
-                    _saveMapType();
-                  });
-                },
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                setState(() {
-                  _mapType = 'normal';
-                  _saveMapType();
-                });
-              },
+      builder:
+          (context) => AlertDialog(
+            title: const Text('เลือกรูปแบบแผนที่'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  title: const Text('แผนที่ปกติ'),
+                  leading: Radio<String>(
+                    value: 'normal',
+                    groupValue: _mapType,
+                    onChanged: (value) {
+                      Navigator.pop(context);
+                      setState(() {
+                        _mapType = value!;
+                        _saveMapType();
+                      });
+                    },
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() {
+                      _mapType = 'normal';
+                      _saveMapType();
+                    });
+                  },
+                ),
+                ListTile(
+                  title: const Text('ดาวเทียม'),
+                  leading: Radio<String>(
+                    value: 'satellite',
+                    groupValue: _mapType,
+                    onChanged: (value) {
+                      Navigator.pop(context);
+                      setState(() {
+                        _mapType = value!;
+                        _saveMapType();
+                      });
+                    },
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() {
+                      _mapType = 'satellite';
+                      _saveMapType();
+                    });
+                  },
+                ),
+                ListTile(
+                  title: const Text('ภูมิประเทศ'),
+                  leading: Radio<String>(
+                    value: 'terrain',
+                    groupValue: _mapType,
+                    onChanged: (value) {
+                      Navigator.pop(context);
+                      setState(() {
+                        _mapType = value!;
+                        _saveMapType();
+                      });
+                    },
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() {
+                      _mapType = 'terrain';
+                      _saveMapType();
+                    });
+                  },
+                ),
+                ListTile(
+                  title: const Text('ผสม'),
+                  leading: Radio<String>(
+                    value: 'hybrid',
+                    groupValue: _mapType,
+                    onChanged: (value) {
+                      Navigator.pop(context);
+                      setState(() {
+                        _mapType = value!;
+                        _saveMapType();
+                      });
+                    },
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() {
+                      _mapType = 'hybrid';
+                      _saveMapType();
+                    });
+                  },
+                ),
+              ],
             ),
-            ListTile(
-              title: const Text('ดาวเทียม'),
-              leading: Radio<String>(
-                value: 'satellite',
-                groupValue: _mapType,
-                onChanged: (value) {
-                  Navigator.pop(context);
-                  setState(() {
-                    _mapType = value!;
-                    _saveMapType();
-                  });
-                },
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('ยกเลิก'),
               ),
-              onTap: () {
-                Navigator.pop(context);
-                setState(() {
-                  _mapType = 'satellite';
-                  _saveMapType();
-                });
-              },
-            ),
-            ListTile(
-              title: const Text('ภูมิประเทศ'),
-              leading: Radio<String>(
-                value: 'terrain',
-                groupValue: _mapType,
-                onChanged: (value) {
-                  Navigator.pop(context);
-                  setState(() {
-                    _mapType = value!;
-                    _saveMapType();
-                  });
-                },
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                setState(() {
-                  _mapType = 'terrain';
-                  _saveMapType();
-                });
-              },
-            ),
-            ListTile(
-              title: const Text('ผสม'),
-              leading: Radio<String>(
-                value: 'hybrid',
-                groupValue: _mapType,
-                onChanged: (value) {
-                  Navigator.pop(context);
-                  setState(() {
-                    _mapType = value!;
-                    _saveMapType();
-                  });
-                },
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                setState(() {
-                  _mapType = 'hybrid';
-                  _saveMapType();
-                });
-              },
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('ยกเลิก'),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -2070,7 +2607,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _moveToUserLocation() async {
     try {
       final locationData = await _locationService.getLocation();
-      
+
       if (locationData.latitude == null || locationData.longitude == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -2080,13 +2617,28 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         return;
       }
-      
+
       // Move map to user location
-      _mapController.move(
-        LatLng(locationData.latitude!, locationData.longitude!),
-        14.0,
-      );
-      
+      if (Platform.isIOS && _iosMapController != null) {
+        await _iosMapController!.animateCamera(
+          AM.CameraUpdate.newLatLngZoom(
+            AM.LatLng(locationData.latitude!, locationData.longitude!),
+            14,
+          ),
+        );
+        debugPrint(
+          'HomeScreen - Moved iOS map to user location: ${locationData.latitude}, ${locationData.longitude}',
+        );
+      } else if (_isMapLoaded) {
+        _mapController.move(
+          LatLng(locationData.latitude!, locationData.longitude!),
+          14.0,
+        );
+        debugPrint(
+          'HomeScreen - Moved Flutter map to user location: ${locationData.latitude}, ${locationData.longitude}',
+        );
+      }
+
       // Create marker for user location
       setState(() {
         _markers['current_location'] = Marker(
@@ -2106,11 +2658,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ],
             ),
-            child: const Icon(
-              Icons.my_location,
-              color: Colors.white,
-              size: 20,
-            ),
+            child: const Icon(Icons.my_location, color: Colors.white, size: 20),
           ),
         );
       });
@@ -2129,7 +2677,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // Apply date filter
     DateTime? startDate;
     final now = DateTime.now();
-    
+
     switch (_selectedDateFilter) {
       case DateFilterOption.today:
         startDate = DateTime(now.year, now.month, now.day);
@@ -2148,14 +2696,14 @@ class _HomeScreenState extends State<HomeScreen> {
         startDate = null;
         break;
     }
-    
+
     // Apply region filter
     return earthquakes.where((quake) {
       // Apply date filter if set
       if (startDate != null && quake.time.isBefore(startDate)) {
         return false;
       }
-      
+
       // Apply region filter if set
       if (_selectedRegionCode != null && _selectedRegionCode != 'all') {
         if (_selectedRegionCode == 'thailand') {
@@ -2164,29 +2712,29 @@ class _HomeScreenState extends State<HomeScreen> {
           return _isInSoutheastAsia(quake.latitude, quake.longitude);
         }
       }
-      
+
       return true;
     }).toList();
   }
-  
+
   // Helper method to check if coordinates are in Thailand
   bool _isInThailand(double lat, double lng) {
     // Thailand rough bounding box
     return lat >= 5.5 && lat <= 20.5 && lng >= 97.3 && lng <= 105.6;
   }
-  
+
   // Helper method to check if coordinates are in Southeast Asia
   bool _isInSoutheastAsia(double lat, double lng) {
     // Southeast Asia rough bounding box
     return lat >= -11.0 && lat <= 29.0 && lng >= 92.0 && lng <= 141.0;
   }
-  
+
   // Show earthquake details
   void _showQuakeDetails(Earthquake quake) {
     // คำนวณระยะห่างจากตำแหน่งผู้ใช้
     String distanceInfo = 'ไม่ทราบระยะห่าง';
-    if (_currentUserLocation != null && 
-        _currentUserLocation!.latitude != null && 
+    if (_currentUserLocation != null &&
+        _currentUserLocation!.latitude != null &&
         _currentUserLocation!.longitude != null) {
       final distance = _calculateDistance(
         _currentUserLocation!.latitude!,
@@ -2199,82 +2747,106 @@ class _HomeScreenState extends State<HomeScreen> {
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
-        title: Text(
-          'แผ่นดินไหว ${quake.magnitude}',
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildInfoRow('สถานที่:', quake.location),
-              _buildInfoRow('เวลา:', DateFormat('dd/MM/yyyy HH:mm:ss').format(quake.time)),
-              _buildInfoRow('ความลึก:', '${quake.depth} กม.'),
-              _buildInfoRow('ระยะห่างจากคุณ:', distanceInfo),
-              _buildInfoRow('ละติจูด:', quake.latitude.toString()),
-              _buildInfoRow('ลองจิจูด:', quake.longitude.toString()),
+      builder:
+          (context) => AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            title: Text(
+              'แผ่นดินไหว ${quake.magnitude}',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildInfoRow('สถานที่:', quake.location),
+                  _buildInfoRow(
+                    'เวลา:',
+                    DateFormat('dd/MM/yyyy HH:mm:ss').format(quake.time),
+                  ),
+                  _buildInfoRow('ความลึก:', '${quake.depth} กม.'),
+                  _buildInfoRow('ระยะห่างจากคุณ:', distanceInfo),
+                  _buildInfoRow('ละติจูด:', quake.latitude.toString()),
+                  _buildInfoRow('ลองจิจูด:', quake.longitude.toString()),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                child: const Text(
+                  'ปิด',
+                  style: TextStyle(color: Colors.orange),
+                ),
+                onPressed: () => Navigator.pop(context),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  _openInGoogleMaps(
+                    quake.latitude,
+                    quake.longitude,
+                    quake.location,
+                  );
+                },
+                icon: const Icon(Icons.map),
+                label: const Text('Google Maps'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context);
+                  // นำทางไปยังหน้าแผนที่พร้อมแสดงเฉพาะแผ่นดินไหวที่เลือก
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder:
+                          (context) => MapScreen(
+                            dataMode: DataFetchMode.values.byName(
+                              _dataFetchMode.name,
+                            ),
+                            selectedEarthquake: quake,
+                          ),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.map),
+                label: const Text('แสดงในแผนที่'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                ),
+              ),
             ],
           ),
-        ),
-        actions: [
-          TextButton(
-            child: const Text('ปิด', style: TextStyle(color: Colors.orange)),
-            onPressed: () => Navigator.pop(context),
-          ),
-          ElevatedButton.icon(
-            onPressed: () {
-              _openInGoogleMaps(quake.latitude, quake.longitude, quake.location);
-            },
-            icon: const Icon(Icons.map),
-            label: const Text('Google Maps'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue,
-              foregroundColor: Colors.white,
-            ),
-          ),
-          ElevatedButton.icon(
-            onPressed: () {
-              Navigator.pop(context);
-              // นำทางไปยังหน้าแผนที่พร้อมแสดงเฉพาะแผ่นดินไหวที่เลือก
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => MapScreen(
-                    dataMode: DataFetchMode.values.byName(_dataFetchMode.name),
-                    selectedEarthquake: quake,
-                  ),
-                ),
-              );
-            },
-            icon: const Icon(Icons.map),
-            label: const Text('แสดงในแผนที่'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              foregroundColor: Colors.white,
-            ),
-          ),
-        ],
-      ),
     );
   }
 
   // Add a new function to handle notifications more carefully
-  Future<void> _checkForNewEarthquakesAndNotify(List<Earthquake> earthquakes) async {
+  Future<void> _checkForNewEarthquakesAndNotify(
+    List<Earthquake> earthquakes,
+  ) async {
     debugPrint('เช็คข้อมูลแผ่นดินไหวใหม่ (ไม่มีการแจ้งเตือน)');
-    
+
     // ไม่ส่งการแจ้งเตือนในทุกกรณี
     // แจ้งเตือนจะมาจาก FCM เท่านั้น
-    
+
     // Filter earthquakes to only those in the last 15 minutes
-    final recentEarthquakes = earthquakes.where(
-      (quake) => DateTime.now().difference(quake.time).inMinutes <= 15
-    ).toList();
-    
+    final recentEarthquakes =
+        earthquakes
+            .where(
+              (quake) => DateTime.now().difference(quake.time).inMinutes <= 15,
+            )
+            .toList();
+
     if (recentEarthquakes.isNotEmpty) {
-      debugPrint('พบ ${recentEarthquakes.length} แผ่นดินไหวในช่วง 15 นาทีที่ผ่านมา (ไม่ส่งการแจ้งเตือน)');
+      debugPrint(
+        'พบ ${recentEarthquakes.length} แผ่นดินไหวในช่วง 15 นาทีที่ผ่านมา (ไม่ส่งการแจ้งเตือน)',
+      );
     } else {
       debugPrint('ไม่พบแผ่นดินไหวใหม่ในช่วง 15 นาทีที่ผ่านมา');
     }
@@ -2287,34 +2859,47 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _currentUserLocation = locationData;
       });
-      debugPrint('User location: ${locationData.latitude}, ${locationData.longitude}');
+      debugPrint(
+        'User location: ${locationData.latitude}, ${locationData.longitude}',
+      );
     } catch (e) {
       debugPrint('Error getting user location: $e');
     }
   }
 
   // เพิ่มฟังก์ชันคำนวณระยะห่างโดยใช้ Haversine formula
-  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+  double _calculateDistance(
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
     const R = 6371.0; // Earth radius in kilometers
     final dLat = _toRadians(lat2 - lat1);
     final dLon = _toRadians(lon2 - lon1);
-    
-    final a = 
-        sin(dLat/2) * sin(dLat/2) +
-        cos(_toRadians(lat1)) * cos(_toRadians(lat2)) * 
-        sin(dLon/2) * sin(dLon/2);
-        
-    final c = 2 * atan2(sqrt(a), sqrt(1-a));
+
+    final a =
+        sin(dLat / 2) * sin(dLat / 2) +
+        cos(_toRadians(lat1)) *
+            cos(_toRadians(lat2)) *
+            sin(dLon / 2) *
+            sin(dLon / 2);
+
+    final c = 2 * atan2(sqrt(a), sqrt(1 - a));
     return R * c;
   }
-  
+
   // Convert degrees to radians
   double _toRadians(double degree) {
     return degree * pi / 180;
   }
 
   // เพิ่มฟังก์ชันเปิด Google Maps
-  Future<void> _openInGoogleMaps(double latitude, double longitude, String location) async {
+  Future<void> _openInGoogleMaps(
+    double latitude,
+    double longitude,
+    String location,
+  ) async {
     // ลิสต์ของ URL ที่จะลองเปิดตามลำดับ
     final List<String> mapUrls = [
       // 1. ลอง Google Maps app ก่อน (geo intent)
@@ -2326,24 +2911,24 @@ class _HomeScreenState extends State<HomeScreen> {
       // 4. Generic maps URL
       'https://maps.google.com/maps?q=$latitude,$longitude',
     ];
-    
+
     bool opened = false;
     String lastError = '';
-    
+
     for (int i = 0; i < mapUrls.length; i++) {
       try {
         final String url = mapUrls[i];
         final Uri uri = Uri.parse(url);
-        
+
         debugPrint('กำลังลองเปิด URL ที่ ${i + 1}: $url');
-        
+
         // ลองเปิด URL โดยตรงแทนการตรวจสอบด้วย canLaunchUrl ก่อน
         // เพราะ canLaunchUrl อาจส่งคืนค่า false แม้ว่าจริงๆ แล้วเปิดได้
         await launchUrl(uri, mode: LaunchMode.externalApplication);
-        
+
         debugPrint('✅ เปิด URL สำเร็จ: $url');
         opened = true;
-        
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -2354,89 +2939,95 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         }
         break;
-        
       } catch (e) {
         lastError = 'เกิดข้อผิดพลาด: $e';
         debugPrint('❌ เกิดข้อผิดพลาดในการเปิด URL ที่ ${i + 1}: $e');
-        
+
         // ถ้าเป็น URL แรก (geo intent) และล้มเหลว ให้ลองต่อไป
         // ถ้าเป็น URL อื่นๆ และล้มเหลว ให้ลองต่อไป
         continue;
       }
     }
-    
+
     // ถ้าเปิดไม่ได้เลย ให้แสดงข้อความแจ้งเตือนและเสนอทางเลือก
     if (!opened && mounted) {
       showDialog(
         context: context,
-        builder: (context) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
-          title: const Text(
-            'ไม่สามารถเปิด Google Maps ได้',
-            style: TextStyle(color: Colors.white),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'กรุณาลองวิธีใดวิธีหนึ่งต่อไปนี้:',
+        builder:
+            (context) => AlertDialog(
+              backgroundColor: const Color(0xFF1E1E1E),
+              title: const Text(
+                'ไม่สามารถเปิด Google Maps ได้',
                 style: TextStyle(color: Colors.white),
               ),
-              const SizedBox(height: 16),
-              const Text(
-                '• ติดตั้งแอพ Google Maps',
-                style: TextStyle(color: Colors.white70),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'กรุณาลองวิธีใดวิธีหนึ่งต่อไปนี้:',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '• ติดตั้งแอพ Google Maps',
+                    style: TextStyle(color: Colors.white70),
+                  ),
+                  const Text(
+                    '• คัดลอกพิกัดและค้นหาในแอพแผนที่อื่น',
+                    style: TextStyle(color: Colors.white70),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade800,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: SelectableText(
+                      'พิกัด: $latitude, $longitude',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'ข้อผิดพลาดล่าสุด: $lastError',
+                    style: const TextStyle(color: Colors.red, fontSize: 12),
+                  ),
+                ],
               ),
-              const Text(
-                '• คัดลอกพิกัดและค้นหาในแอพแผนที่อื่น',
-                style: TextStyle(color: Colors.white70),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade800,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: SelectableText(
-                  'พิกัด: $latitude, $longitude',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontFamily: 'monospace',
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    // คัดลอกพิกัดไปยังคลิปบอร์ด
+                    FlutterClipboard.copy('$latitude, $longitude').then((_) {
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('คัดลอกพิกัดแล้ว'),
+                          backgroundColor: Colors.green,
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    });
+                  },
+                  child: const Text(
+                    'คัดลอกพิกัด',
+                    style: TextStyle(color: Colors.blue),
                   ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'ข้อผิดพลาดล่าสุด: $lastError',
-                style: const TextStyle(color: Colors.red, fontSize: 12),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                // คัดลอกพิกัดไปยังคลิปบอร์ด
-                FlutterClipboard.copy('$latitude, $longitude').then((_) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('คัดลอกพิกัดแล้ว'),
-                      backgroundColor: Colors.green,
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
-                });
-              },
-              child: const Text('คัดลอกพิกัด', style: TextStyle(color: Colors.blue)),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text(
+                    'ปิด',
+                    style: TextStyle(color: Colors.orange),
+                  ),
+                ),
+              ],
             ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('ปิด', style: TextStyle(color: Colors.orange)),
-            ),
-          ],
-        ),
       );
     }
   }

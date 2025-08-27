@@ -29,7 +29,9 @@
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>แอปใช้ตำแหน่งเพื่อคำนวณระยะห่างจากจุดแผ่นดินไหว</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>แอปใช้ตำแหน่งเพื่อคำนวณระยะห่างจากจุดแผ่นดินไหว</string>
+	<string>แอปใช้ตำแหน่งเพื่อคำนวณระยะห่างจากจุดแผ่นดินไหวและแสดงตำแหน่งของคุณบนแผนที่</string>
+	<key>io.flutter.embedded_views_preview</key>
+	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>
